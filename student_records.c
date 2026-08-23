@@ -1,332 +1,101 @@
 /*
- * Student Record Management System
- * ==================================
- * Menu-driven C application with CRUD operations across all six
- * standard file access modes: r, w, a, r+, w+, a+
- *
- * Features:
- *   - Create / overwrite records     (w)
- *   - Read / display all records     (r)
- *   - Append new records             (a)
- *   - Modify a record by roll number (r+  with fseek)
- *   - Recreate the entire file       (w+)
- *   - Append and read back           (a+)
- *
- * Tech Stack: C, File I/O (fprintf, fscanf, fseek, rewind)
+ * Student Record Management System (compact version)
+ * File modes covered: w, r, a, r+, w+, a+  |  plus delete
  */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* ── Data Structures ────────────────────────────────────────────── */
+#define MAX_NAME  50
+#define DATA_FILE "students.dat"
+#define TMP_FILE  "students_tmp.dat"
 
-#define MAX_NAME   50
-#define DATA_FILE  "students.dat"
+typedef struct { int roll; char name[MAX_NAME]; float marks; char grade; } Student;
 
-typedef struct {
-    int   roll;
-    char  name[MAX_NAME];
-    float marks;
-    char  grade;
-} Student;
-
-/* ── Utility: Compute grade from marks ───────────────────────────── */
-char compute_grade(float marks) {
-    if (marks >= 90) return 'O';
-    if (marks >= 80) return 'A';
-    if (marks >= 70) return 'B';
-    if (marks >= 60) return 'C';
-    if (marks >= 50) return 'D';
-    return 'F';
+char compute_grade(float m) {
+    return m>=90?'O': m>=80?'A': m>=70?'B': m>=60?'C': m>=50?'D':'F';
 }
 
-/* ── Utility: Print a single record ─────────────────────────────── */
-void print_student(const Student *s) {
-    printf("  Roll: %-5d  Name: %-25s  Marks: %6.2f  Grade: %c\n",
-           s->roll, s->name, s->marks, s->grade);
+void print_student(Student *s) {
+    printf("  Roll:%-5d Name:%-25s Marks:%6.2f Grade:%c\n", s->roll, s->name, s->marks, s->grade);
 }
 
-/* ── Utility: Print separator ────────────────────────────────────── */
-void print_sep(void) {
-    printf("  %s\n", "─────────────────────────────────────────────────────────");
-}
-
-/* ─────────────────────────────────────────────────────────────────
- * 1. CREATE — Mode "w"
- *    Overwrites the file and writes N new records.
- * ───────────────────────────────────────────────────────────────── */
-void create_records(void) {
-    FILE *fp = fopen(DATA_FILE, "w");
-    if (!fp) { perror("fopen(w)"); return; }
-
-    int n;
-    printf("\n  How many students to add? ");
-    scanf("%d", &n);
-
+/* Prompt for N students, write each to fp. Returns count written. */
+int add_students(FILE *fp) {
+    int n; Student s;
+    printf("\n  How many students? "); scanf("%d", &n);
     for (int i = 0; i < n; i++) {
-        Student s;
-        printf("\n  Student %d\n", i + 1);
-        printf("  Roll number : "); scanf("%d",   &s.roll);
-        printf("  Full name   : "); scanf(" %[^\n]", s.name);
-        printf("  Marks (100) : "); scanf("%f",   &s.marks);
+        printf("  Roll: ");  scanf("%d", &s.roll);
+        printf("  Name: ");  scanf(" %[^\n]", s.name);
+        printf("  Marks: "); scanf("%f", &s.marks);
         s.grade = compute_grade(s.marks);
         fprintf(fp, "%d|%s|%.2f|%c\n", s.roll, s.name, s.marks, s.grade);
     }
-
-    fclose(fp);
-    printf("\n  ✔ %d record(s) written to '%s'.\n", n, DATA_FILE);
+    return n;
 }
 
-/* ─────────────────────────────────────────────────────────────────
- * 2. READ — Mode "r"
- *    Reads and displays all records from the file.
- * ───────────────────────────────────────────────────────────────── */
-void read_records(void) {
+/* Read and print all records from fp. Returns count. */
+int show_all(FILE *fp) {
+    Student s; int count = 0;
+    while (fscanf(fp, "%d|%49[^|]|%f|%c\n", &s.roll, s.name, &s.marks, &s.grade) == 4) {
+        print_student(&s); count++;
+    }
+    if (!count) printf("  (No records)\n");
+    printf("  Total: %d\n", count);
+    return count;
+}
+
+void create_records(void)   { FILE *fp=fopen(DATA_FILE,"w");  if(!fp){perror("w");return;}  add_students(fp); fclose(fp); }
+void read_records(void)     { FILE *fp=fopen(DATA_FILE,"r");  if(!fp){printf("  [!] No file.\n");return;} show_all(fp); fclose(fp); }
+void append_records(void)   { FILE *fp=fopen(DATA_FILE,"a");  if(!fp){perror("a");return;}  add_students(fp); fclose(fp); }
+void recreate_records(void) { FILE *fp=fopen(DATA_FILE,"w+"); if(!fp){perror("w+");return;} add_students(fp); rewind(fp); show_all(fp); fclose(fp); }
+void append_and_read(void)  { FILE *fp=fopen(DATA_FILE,"a+"); if(!fp){perror("a+");return;} add_students(fp); rewind(fp); show_all(fp); fclose(fp); }
+
+/* Shared logic for modify (r+) and delete: rewrite file via temp,
+ * acting on the matching roll number. is_delete=0 -> modify marks, 1 -> drop record. */
+void edit_record(int is_delete) {
+    int roll; printf("\n  Roll number: "); scanf("%d", &roll);
     FILE *fp = fopen(DATA_FILE, "r");
-    if (!fp) { printf("  [!] File not found. Create records first.\n"); return; }
+    if (!fp) { printf("  [!] No file.\n"); return; }
+    FILE *tmp = fopen(TMP_FILE, "w");
+    if (!tmp) { fclose(fp); perror("tmp"); return; }
 
-    Student s;
-    int count = 0;
-    printf("\n  All Student Records\n");
-    print_sep();
-
-    while (fscanf(fp, "%d|%49[^|]|%f|%c\n",
-                  &s.roll, s.name, &s.marks, &s.grade) == 4) {
-        print_student(&s);
-        count++;
-    }
-
-    if (count == 0) printf("  (No records found.)\n");
-    print_sep();
-    printf("  Total: %d record(s).\n", count);
-    fclose(fp);
-}
-
-/* ─────────────────────────────────────────────────────────────────
- * 3. APPEND — Mode "a"
- *    Adds new records at the end without disturbing existing data.
- * ───────────────────────────────────────────────────────────────── */
-void append_records(void) {
-    FILE *fp = fopen(DATA_FILE, "a");
-    if (!fp) { perror("fopen(a)"); return; }
-
-    int n;
-    printf("\n  How many students to append? ");
-    scanf("%d", &n);
-
-    for (int i = 0; i < n; i++) {
-        Student s;
-        printf("\n  Student %d\n", i + 1);
-        printf("  Roll number : "); scanf("%d",   &s.roll);
-        printf("  Full name   : "); scanf(" %[^\n]", s.name);
-        printf("  Marks (100) : "); scanf("%f",   &s.marks);
-        s.grade = compute_grade(s.marks);
-        fprintf(fp, "%d|%s|%.2f|%c\n", s.roll, s.name, s.marks, s.grade);
-    }
-
-    fclose(fp);
-    printf("\n  ✔ %d record(s) appended to '%s'.\n", n, DATA_FILE);
-}
-
-/* ─────────────────────────────────────────────────────────────────
- * 4. MODIFY — Mode "r+"
- *    Locates a student by roll number using fseek and updates marks.
- *    Uses a temp file strategy to safely rewrite the matching line.
- * ───────────────────────────────────────────────────────────────── */
-void modify_record(void) {
-    int target_roll;
-    printf("\n  Enter roll number to modify: ");
-    scanf("%d", &target_roll);
-
-    FILE *fp  = fopen(DATA_FILE, "r");
-    if (!fp) { printf("  [!] File not found.\n"); return; }
-
-    FILE *tmp = fopen("students_tmp.dat", "w");
-    if (!tmp) { fclose(fp); perror("fopen(tmp)"); return; }
-
-    Student s;
-    int found = 0;
-
-    while (fscanf(fp, "%d|%49[^|]|%f|%c\n",
-                  &s.roll, s.name, &s.marks, &s.grade) == 4) {
-        if (s.roll == target_roll) {
+    Student s; int found = 0;
+    while (fscanf(fp, "%d|%49[^|]|%f|%c\n", &s.roll, s.name, &s.marks, &s.grade) == 4) {
+        if (s.roll == roll) {
             found = 1;
+            if (is_delete) { printf("  Deleted: "); print_student(&s); continue; }
             printf("  Found: "); print_student(&s);
             printf("  New marks: "); scanf("%f", &s.marks);
             s.grade = compute_grade(s.marks);
-            printf("  Updated: "); print_student(&s);
         }
         fprintf(tmp, "%d|%s|%.2f|%c\n", s.roll, s.name, s.marks, s.grade);
     }
+    fclose(fp); fclose(tmp);
 
-    fclose(fp);
-    fclose(tmp);
-
-    if (found) {
-        remove(DATA_FILE);
-        rename("students_tmp.dat", DATA_FILE);
-        printf("\n  ✔ Record updated.\n");
-    } else {
-        remove("students_tmp.dat");
-        printf("\n  [!] Roll number %d not found.\n", target_roll);
-    }
-}
-
-/* ─────────────────────────────────────────────────────────────────
- * 5. RECREATE — Mode "w+"
- *    Opens for both writing and reading; truncates the file.
- *    Writes fresh records and then reads them back immediately.
- * ───────────────────────────────────────────────────────────────── */
-void recreate_records(void) {
-    FILE *fp = fopen(DATA_FILE, "w+");
-    if (!fp) { perror("fopen(w+)"); return; }
-
-    int n;
-    printf("\n  Recreate file — how many students? ");
-    scanf("%d", &n);
-
-    for (int i = 0; i < n; i++) {
-        Student s;
-        printf("\n  Student %d\n", i + 1);
-        printf("  Roll number : "); scanf("%d",   &s.roll);
-        printf("  Full name   : "); scanf(" %[^\n]", s.name);
-        printf("  Marks (100) : "); scanf("%f",   &s.marks);
-        s.grade = compute_grade(s.marks);
-        fprintf(fp, "%d|%s|%.2f|%c\n", s.roll, s.name, s.marks, s.grade);
-    }
-
-    /* Read back immediately using the same file pointer */
-    rewind(fp);
-    Student s;
-    int count = 0;
-    printf("\n  Verification — records just written:\n");
-    print_sep();
-    while (fscanf(fp, "%d|%49[^|]|%f|%c\n",
-                  &s.roll, s.name, &s.marks, &s.grade) == 4) {
-        print_student(&s);
-        count++;
-    }
-    print_sep();
-    printf("  %d record(s) verified.\n", count);
-    fclose(fp);
-}
-
-/* ─────────────────────────────────────────────────────────────────
- * 6. APPEND & READ — Mode "a+"
- *    Appends new records and reads the full file back.
- * ───────────────────────────────────────────────────────────────── */
-void append_and_read(void) {
-    FILE *fp = fopen(DATA_FILE, "a+");
-    if (!fp) { perror("fopen(a+)"); return; }
-
-    int n;
-    printf("\n  Append & Read — how many new students? ");
-    scanf("%d", &n);
-
-    for (int i = 0; i < n; i++) {
-        Student s;
-        printf("\n  Student %d\n", i + 1);
-        printf("  Roll number : "); scanf("%d",   &s.roll);
-        printf("  Full name   : "); scanf(" %[^\n]", s.name);
-        printf("  Marks (100) : "); scanf("%f",   &s.marks);
-        s.grade = compute_grade(s.marks);
-        fprintf(fp, "%d|%s|%.2f|%c\n", s.roll, s.name, s.marks, s.grade);
-    }
-
-    /* Read all records (including newly appended) */
-    rewind(fp);
-    Student s;
-    int count = 0;
-    printf("\n  Full file after append:\n");
-    print_sep();
-    while (fscanf(fp, "%d|%49[^|]|%f|%c\n",
-                  &s.roll, s.name, &s.marks, &s.grade) == 4) {
-        print_student(&s);
-        count++;
-    }
-    print_sep();
-    printf("  Total: %d record(s).\n", count);
-    fclose(fp);
-}
-
-/* ─────────────────────────────────────────────────────────────────
- * 7. DELETE — remove a record by roll number
- * ───────────────────────────────────────────────────────────────── */
-void delete_record(void) {
-    int target_roll;
-    printf("\n  Enter roll number to delete: ");
-    scanf("%d", &target_roll);
-
-    FILE *fp  = fopen(DATA_FILE, "r");
-    if (!fp) { printf("  [!] File not found.\n"); return; }
-
-    FILE *tmp = fopen("students_tmp.dat", "w");
-    if (!tmp) { fclose(fp); perror("fopen(tmp)"); return; }
-
-    Student s;
-    int found = 0;
-
-    while (fscanf(fp, "%d|%49[^|]|%f|%c\n",
-                  &s.roll, s.name, &s.marks, &s.grade) == 4) {
-        if (s.roll == target_roll) {
-            found = 1;
-            printf("  Deleted: "); print_student(&s);
-        } else {
-            fprintf(tmp, "%d|%s|%.2f|%c\n", s.roll, s.name, s.marks, s.grade);
-        }
-    }
-
-    fclose(fp);
-    fclose(tmp);
-
-    if (found) {
-        remove(DATA_FILE);
-        rename("students_tmp.dat", DATA_FILE);
-        printf("  ✔ Record removed.\n");
-    } else {
-        remove("students_tmp.dat");
-        printf("  [!] Roll number %d not found.\n", target_roll);
-    }
-}
-
-/* ── MAIN MENU ────────────────────────────────────────────────────── */
-
-void print_menu(void) {
-    printf("\n  ╔══════════════════════════════════════╗\n");
-    printf("  ║   Student Record Management System  ║\n");
-    printf("  ╠══════════════════════════════════════╣\n");
-    printf("  ║  1. Create records       (mode: w)  ║\n");
-    printf("  ║  2. Read all records     (mode: r)  ║\n");
-    printf("  ║  3. Append records       (mode: a)  ║\n");
-    printf("  ║  4. Modify a record      (mode: r+) ║\n");
-    printf("  ║  5. Recreate file        (mode: w+) ║\n");
-    printf("  ║  6. Append & read back   (mode: a+) ║\n");
-    printf("  ║  7. Delete a record                 ║\n");
-    printf("  ║  0. Exit                            ║\n");
-    printf("  ╚══════════════════════════════════════╝\n");
-    printf("  Choice: ");
+    if (found) { remove(DATA_FILE); rename(TMP_FILE, DATA_FILE); printf("  \u2714 Done.\n"); }
+    else       { remove(TMP_FILE);  printf("  [!] Roll %d not found.\n", roll); }
 }
 
 int main(void) {
     int choice;
-
+    const char *menu =
+        "\n  1.Create(w) 2.Read(r) 3.Append(a) 4.Modify(r+)\n"
+        "  5.Recreate(w+) 6.Append+Read(a+) 7.Delete 0.Exit\n  Choice: ";
     do {
-        print_menu();
-        if (scanf("%d", &choice) != 1) { choice = -1; }
-
+        printf("%s", menu);
+        if (scanf("%d", &choice) != 1) choice = -1;
         switch (choice) {
-            case 1: create_records();  break;
-            case 2: read_records();    break;
-            case 3: append_records();  break;
-            case 4: modify_record();   break;
-            case 5: recreate_records();break;
-            case 6: append_and_read(); break;
-            case 7: delete_record();   break;
+            case 1: create_records();   break;
+            case 2: read_records();     break;
+            case 3: append_records();   break;
+            case 4: edit_record(0);     break;
+            case 5: recreate_records(); break;
+            case 6: append_and_read();  break;
+            case 7: edit_record(1);     break;
             case 0: printf("\n  Goodbye!\n"); break;
-            default: printf("\n  [!] Invalid choice. Try again.\n"); break;
+            default: printf("  [!] Invalid.\n");
         }
     } while (choice != 0);
-
     return 0;
 }
